@@ -4,9 +4,9 @@ export batch_gradient_descent, stochastic_gradient_descent, locally_weighted_reg
 
 function validate_inputs(X, Y)
     if X === [] || Y === [] 
-        throw(ArgumentError["input matrix should not be empty"])
+        throw(ArgumentError("input matrix should not be empty"))
     elseif size(X, 1) != size(Y, 1)
-        throw(DimensionMismatch["input samples and labels should have same number of rows"]) 
+        throw(DimensionMismatch("input samples and labels should have same number of rows")) 
     end
 end
 
@@ -125,7 +125,7 @@ end
 
 
 """
-    locally_weighted_regression()
+    locally_weighted_regression(X, Y, x_p[, θ]; <keyword arguments>)
 
 Apply linear regression in one region near the point that needs predicting.  
 
