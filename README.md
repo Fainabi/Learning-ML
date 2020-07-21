@@ -1,5 +1,5 @@
 # Learning for ML
-I start this for practicing training modules of machine learning and as
+I start this for practicing training models of machine learning and as
 a note of what I've learnt in the courses([Stanford CS229: Machine Learning (Autumn 2018)](https://www.youtube.com/watch?v=jGwO_UgTS7I&list=PLoROMvodv4rMiGQp3WXShtMGgzqpfVfbU)) on youtube.
 
 ## Content

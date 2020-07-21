@@ -13,9 +13,9 @@ end
 """
     batch_gradient_descent(X, Y[, θ]; <keyword arguments>)
 
-Compute the coefficient(`θ`) of linear regression module with the dataset and labels input, using the batch gradient descent method. 
+Compute the coefficient(`θ`) of linear regression model with the dataset and labels input, using the batch gradient descent method. 
 
-The linear regression module looks like  
+The linear regression model looks like  
     `` ∑_{i=0}^{m} θ x_i = y `` where `` x_0 = 1 ``.  
 
 Coefficients, residual and iteration will be returned.
@@ -26,7 +26,7 @@ See also: [`stochastic_gradient_descent`, `locally_weighted_regression`](@ref)
 # Arguments
 - `X::Array`: the dataset 
 - `Y::Array`: the targets or labels of the dataset
-- `θ::AbstractFloat`: initial value of coefficient in linear regression module
+- `θ::AbstractFloat`: initial value of coefficient in linear regression model
 - `α::AbstractFloat`: learning rate, default value is 0.01
 - `ε::AbstractFloat`: condition for terminating iteration, default value is 1e-7
 - `max_iter::Number`: the upper bound of iteration, default value is 1e5
@@ -71,7 +71,7 @@ end
 """
     stochastic_gradient_descent(X, Y[, θ]; <keyword arguments>)
 
-Compute the coefficient(`θ`) of linear regression module with the dataset and labels input with stochastic gradient descent method.
+Compute the coefficient(`θ`) of linear regression model with the dataset and labels input with stochastic gradient descent method.
 
 Coefficients, residual and iteration will be returned.
 
@@ -81,7 +81,7 @@ See also: [`batch_gradient_descent`, `locally_weighted_regression`](@ref)
 # Arguments
 - `X::Array`: the dataset 
 - `Y::Array`: the targets or labels of the dataset
-- `θ::AbstractFloat`: initial value of coefficient in linear regression module
+- `θ::AbstractFloat`: initial value of coefficient in linear regression model
 - `α::AbstractFloat`: learning rate, default value is 0.01
 - `ε::AbstractFloat`: condition for terminating iteration, default value is 1e-7
 - `max_iter::Number`: the upper bound of iteration, default value is 1e5
@@ -146,7 +146,7 @@ See also: [`batch_gradient_descent`, `stochastic_gradient_descent`](@ref)
 - `X::Array`: the dataset 
 - `Y::Array`: the targets or labels of the dataset
 - `x_p::Array`: the point need prediction
-- `θ::AbstractFloat`: initial value of coefficient in linear regression module
+- `θ::AbstractFloat`: initial value of coefficient in linear regression model
 - `α::AbstractFloat`: learning rate, default value is 0.01
 - `ε::AbstractFloat`: condition for terminating iteration, default value is 1e-7
 - `max_iter::Number`: the upper bound of iteration, default value is 1e5

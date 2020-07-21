@@ -20,16 +20,17 @@ with the theory of "Maximum Likelihood Estimation", just to find the
 
 maximum of `l(θ) = ∑ yᵢlog(h_θ(xᵢ)) + (1-yᵢ)log(1-h_θ(xᵢ))` with batch gradient ascent method.
 
-See also: 
+See also: [`perceptron`](@ref)
 
 ...
 # Arguments
-- `P::Array`: positive samples
-- `N::Array`: negative samples
+- `X::Array`: samples
+- `Y::Array`: labels with value 0 or 1
 - `θ::Array`: initial value for coefficient, default set to zeros
 - `α::AbstractFloat`: learning rate, default value is 0.01
 - `ε::AbstractFloat`: condition for terminating iteration, default value is 1e-7
 - `max_iter::Number`: the upper bound of iteration, default value is 1e5
+- `method::String`: declare the method to use, optional methods are "batch" which is default and "newton"
 ...
 
 
@@ -83,11 +84,70 @@ function binary_classification(X, Y, θ=missing; α=1, ε=1e-3, max_iter=1e2, me
         end
     end
 
-    ĥ(x) = h_θ([x 1], θ)                        # get the module trained "h hat"
+    ĥ(x) = h_θ([x ones(size(x, 1))], θ)                        # get the module trained "h hat"
 
     return ĥ, θ, l(θ), iteration
 end
 
 
+"""
+    perceptron()
+
+Step function is chosen here. We make an assemption that the dataset could be separated completely.
+
+If not, please set a smaller iteration upper bound.
+
+See also: [`binary_classification`](@ref)
+
+...
+# Arguments
+- `X::Array`: samples
+- `Y::Array`: labels with value 0 or 1, or negative/positive numbers
+- `θ::Array`: initial value for coefficient, default set to zeros
+- `α::AbstractFloat`: learning rate, default value is 0.01
+- `max_iter::Number`: the upper bound of iteration, default value is 1e5
+...
+
+
+# Examples
+```julia-repl
+julia> X = collect(-10:10); Y = [zeros(10, 1); ones(11, 1)];
+
+julia> LogisticRegression.perceptron(X,Y)
+(Main.LogisticRegression.var"#ĥ#6"{Main.LogisticRegression.var"#h_θ#4"}(Core.Box([55.0; 4.589246190232406]), Main.LogisticRegression.var"#h_θ#4"()), [55.0; 4.589246190232406], -0.010109243555064496, 100)
+
+julia> LogisticRegression.perceptron(X, Y)
+(Main.LogisticRegression.var"#ĥ#13"{Main.LogisticRegression.var"#h_θ#12"}(Core.Box([1.0; 0.1]), Main.LogisticRegression.var"#h_θ#12"()), [1.0; 0.1], 2)
+```
+
+"""
+function perceptron(X, Y, θ=missing; α=0.1, max_iter=1e4)
+    validate_inputs(X, Y)
+    Y = Y .> 0
+
+    dim = size(X, 2)
+    N = size(X, 1)
+    X = [X ones(N, 1)]
+    (θ===missing) && (θ = zeros(dim+1, 1))
+
+    h_θ(X, θ) = (X * θ) .> 0
+
+    iteration = 0
+    while iteration < max_iter 
+        iteration += 1
+
+        # SGD
+        for i = 1:N
+            θ += α * (Y[i] .- h_θ(X[i,:]',θ)) .* X[i, :]
+        end
+        if all(h_θ(X, θ) .== Y)
+            break
+        end
+    end
+
+    ĥ(x) = h_θ([x ones(size(x, 1), 1)], θ)
+
+    return ĥ, θ, iteration
+end 
 
 end
