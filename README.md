@@ -2,7 +2,8 @@
 I start this for practicing training models of machine learning and as
 a note of what I've learnt in the courses([Stanford CS229: Machine Learning (Autumn 2018)](https://www.youtube.com/watch?v=jGwO_UgTS7I&list=PLoROMvodv4rMiGQp3WXShtMGgzqpfVfbU)) on youtube.
 
-## Content
+Content
+-----
 The files follow the order of the courses with slight changes. Variables' name are chosen as
 what they look like in theory as possible, which means most of them consist of Greek alphabeta and
 some subscripts encoded in unicode. In the julia REPL, just type the LaTeX-like abbreviations and enter
@@ -19,4 +20,19 @@ julia> π
 julia>
 ```
 
-Some IDE for julia and extensions also support this.
+Some IDE for julia and extensions also support this. 
+
+Data Format
+----- 
+Dataset here contains all samples of row vector in column, fitting the form:
+$$
+X = 
+\begin{bmatrix}
+    ... x_1^T ... \\
+    ... x_2^T ... \\
+    \vdots  \\
+    ... x_m^T ... \\
+\end{bmatrix}
+$$
+
+So do the labels.
