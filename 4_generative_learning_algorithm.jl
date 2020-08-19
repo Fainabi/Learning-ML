@@ -73,7 +73,7 @@ Here mainly implement as a spam filter.
 
 ...
 # Arguments
-- `X::Array`: samples
+- `X::Array`: samples, shall be zero-one matrix(Multivariate Bernoulli)
 - `Y::Array`: labels with value 0 or 1, or it would be handled with 1{Y}
 - `x_p::Array`: point to predict
 ...
@@ -90,12 +90,12 @@ function naive_bayes(X, Y, x_p)
     X₁ = X[idx_positive, :]
 
     # parameters
-    Φ_y = length(idx_positive) / m
-    Φ_j1 = sum(X₁, dims=1) / length(idx_positive)
-    Φ_j0 = sum(X₀, dims=1) / length(idx_negative)
+    Φ_y = (length(idx_positive)+1) / (m+1)
+    Φ_j1 = (sum(X₁, dims=1)+1) / (length(idx_positive)+2)  # laplace smoothing
+    Φ_j0 = (sum(X₀, dims=1)+1) / (length(idx_negative)+2)
 
     # prediction
-    h(x) = begin  # also input need column vector
+    h(x) = begin  # also input need column vector. here omit the denominator
         P₁ = [x[i] != 0 ? Φ_j1[i] : 1-Φ_j1[i] for i in range(1, stop=length(x))] |> prod
         P₀ = [x[i] != 0 ? Φ_j0[i] : 1-Φ_j0[i] for i in range(1, stop=length(x))] |> prod
         return convert(Int, P₁*Φ_y > P₀*(1-Φ_y))
@@ -104,6 +104,7 @@ function naive_bayes(X, Y, x_p)
     return y_p, h
 end
 
+# Multinomial Event Model
 
 # inner functions
 function validate_inputs(X, Y)
