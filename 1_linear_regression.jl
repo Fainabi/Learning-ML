@@ -47,24 +47,26 @@ function batch_gradient_descent(X, Y, θ=missing; α=0.01, ε=1e-7, max_iter=1e5
 
     N = size(X, 1)              # X could be one single column, in which case size(X) returns (N,)
     dim = size(X, 2)            # so there need to get N and dimesion seperately
-    X = [X ones(N, 1)]
-    (θ === missing) && (θ = zeros(dim+1, 1))
+    # X = [X ones(N, 1)]
+    (θ === missing) && (θ = zeros(dim, 1))
+    b = 0.0
                                 # `θ` is an (N+1) dimention vector, including the coefficient for term `x⁰`
                                 # Here the initial value of `θ` is set to zeros if `θ` is not given
-    J(θ) = sum((X*θ - Y).^2) / 2
+    J(θ, b) = sum((X*θ .+ b - Y).^2) / 2
 
     iteration = 0
     while iteration < max_iter
         iteration += 1
-        residual = X*θ - Y      # N rows 1 column
+        residual = X*θ .+ b - Y      # N rows 1 column
         ▽J = (residual' * X)'  # [▽J]ᵢ = Σⱼ (h(Xⱼ) - Yⱼ)*[Xⱼ]ᵢ, where Xⱼ is a row vector or a sample
-        θ = θ - α * ▽J         # move to next state
+        θ = θ - α * ▽J / N     # move to next state
+        b = b - α * sum(residual) / N
         if maximum(abs.(▽J)) < ε
             break
         end
     end
 
-    return θ, J(θ), iteration
+    return θ, b, J(θ, b)/N, iteration
 end
 
 
