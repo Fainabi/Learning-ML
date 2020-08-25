@@ -1,7 +1,7 @@
 module NeuralNetwork
 
-import Random, CUDA
-using ProgressBars, LinearAlgebra
+import Random
+using ProgressBars, LinearAlgebra, CUDA
 export backpropagation, ActivationFunction
 CUDA.allowscalar(false)
 
@@ -47,7 +47,18 @@ deri_acfun = Dict(
 """
     Net
 
-The neural network.
+The neural network. Struct member is
+
+X, Y, Nodes, Activations, α, max_iter, loss, deri_loss,
+model and mode.  
+
+Use `initialize_net(X, Y; kwargs...)` to get the instance.
+
+All the members could be modified directly.
+
+Use train(net::Net) to train the net. Then the model would
+
+be automatically constructed and could be visited by net.model.
 """
 mutable struct Net
     # training set and parameters
@@ -116,6 +127,7 @@ be inspected by NeuralNetwork.ActivationFunction.
 - `nodes::Array`: number of nodes in every layer
 - `max_iter::Number`: maximum time to iterate, default is 1e3
 - `α::AbstractFloat`: learning rate, default is 0.001
+- `mode::String`: "GPU" or "CPU"
 ...
 
 """
@@ -149,7 +161,9 @@ function backpropagation(X, Y; loss, deri_loss, activations, nodes, α=0.001, ma
     """ 
         Initialize hyper-parameters in memories.
     With initialization, we could use '.=' and avoid
-    massive assignment and gc.
+    massive assignment and gc. In GPU mode, all the
+    parameter matrices are simply convert into CuArray,
+    and the training part is almost same.
     """
     for layer = 1:layer_num
         if layer == 1
@@ -157,7 +171,7 @@ function backpropagation(X, Y; loss, deri_loss, activations, nodes, α=0.001, ma
         else
             push!(w, Random.randn(nodes[layer-1], nodes[layer]))
         end
-        push!(b, zeros(nodes[layer]))
+        push!(b, zeros(nodes[layer], 1))
         push!(z, zeros(nodes[layer], Batch_size))
         push!(δ, zeros(nodes[layer], Batch_size))
         push!(a, zeros(nodes[layer], Batch_size))
@@ -173,14 +187,23 @@ function backpropagation(X, Y; loss, deri_loss, activations, nodes, α=0.001, ma
             push!(batch_size_number, M - Batch_size*(batch-1))
         end
     end
-    
+    if mode == "GPU"
+        w .= cu.(w)
+        b .= cu.(b)
+        z .= cu.(z)
+        δ .= cu.(δ)
+        a .= cu.(a)
+        batch_samples .= cu.(batch_samples)
+        batch_labels .= cu.(batch_labels)
+    end
+
     # train
-    for num_iter = tqdm(1:max_iter)
-        for batch = 1:batch_group_number
+    for epach = tqdm(1:max_iter)
+        @views for batch = 1:batch_group_number
             batch_m = batch_size_number[batch]
             """
                 Forward propagation
-            Some of '=' are reference assigning, so we donnot need
+            Some of '=' are reference assignment, so we do not need
             to use the '.='. Some of '.=' need submatrix because of
             different size in every batch. a[1] is input samples.
             a[end] is the last second layer output. Because it is
@@ -193,25 +216,30 @@ function backpropagation(X, Y; loss, deri_loss, activations, nodes, α=0.001, ma
                 z[layer] .= w[layer]' * a[layer-1] .+ b[layer]  # linear combination
             end
             a[end] .= z[end] .|> activations[end]
-
             """
                 Backward propagation
-
+            Compute all δs and update w, b with them.
             """
             δ[end][:, 1:batch_m] .= deri_loss(a[end][:, 1:batch_m], batch_labels[batch])
             for layer = layer_num-1:-1:1
                 δ[layer] .= w[layer+1] * δ[layer+1] .* broadcast(deri_activations[layer], z[layer])
             end
+            # could update in parallel
             for layer = 2:layer_num
-                δ_layer = @view δ[layer][:, 1:batch_m]  # just a reference
+                δ_layer = δ[layer][:, 1:batch_m]  # just a reference
                 w[layer] .-= a[layer-1][:, 1:batch_m] *  # update w and b
                                 transpose(δ_layer) * α / batch_m
-                b[layer] -= sum(δ_layer, dims=2) * α / batch_m
+                b[layer] .-= sum(δ_layer, dims=2) * α / batch_m
             end
             w[1] .-= batch_samples[batch][:, 1:batch_m] * 
                         transpose(δ[1][:, 1:batch_m]) * α / batch_m
-            b[1] -= sum(δ[1][:, 1:batch_m], dims=2) * α / batch_m
+            b[1] .-= sum(δ[1][:, 1:batch_m], dims=2) * α / batch_m
         end
+    end
+    # downlaod from GPU
+    if mode == "GPU"
+        w .= Array.(w)
+        b .= Array.(b)
     end
 
     return w, b
