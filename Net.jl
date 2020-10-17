@@ -1,6 +1,6 @@
 module Net
 
-using LinearAlgebra, ProgressBars
+using LinearAlgebra, ProgressBars, CUDA
 import Random
 
 @enum ActivationFunction begin
@@ -45,8 +45,8 @@ end
 mutable struct LayerNodes  # all hyper parameters
     Activation::ActivationFunction
     Connection::Array  # nodes that connected at the former layer
-    Weight::Array
-    Bias::Array
+    Weight
+    Bias
 end
 
 
@@ -55,10 +55,10 @@ abstract type AbstractLayer end
 mutable struct FullyConnectedLayer <: AbstractLayer
     NodeNum::Integer
     Nodes::LayerNodes
-    δ::Array
+    δ
 
-    z::Array
-    a::Array
+    z
+    a
 end
 mutable struct ConvolutionalLayer <: AbstractLayer
     NodeNum::Integer
@@ -77,6 +77,7 @@ mutable struct MaxPoolingLayer <: AbstractLayer
 end
 
 function propagate!(layer1::FullyConnectedLayer, layer2::FullyConnectedLayer)
+    # println("z: $(size(layer2.z)), w: $(size(layer2.Nodes.Weight)), a: $(size(layer1.a))")
     layer2.z .= layer2.Nodes.Weight' * layer1.a .+ layer2.Nodes.Bias
     layer2.a .= layer2.z .|> acfun[layer2.Nodes.Activation]
 end
@@ -88,7 +89,8 @@ function propagate(layer::MaxPoolingLayer, state)
 end
 
 function backpropagate!(layer1::FullyConnectedLayer, layer2::FullyConnectedLayer)
-    layer1.δ .= layer2.Nodes.Weight * layer2.δ .* broadcast(deri_acfun[layer1.Nodes.Derivative], layer1.z)
+    # println("$(size(layer1.δ)), Weight: $(size(layer2.Nodes.Weight)), delta: $(size(layer2.δ)), z: $(size(layer1.z)) ")
+    layer1.δ .= layer2.Nodes.Weight * layer2.δ .* broadcast(deri_acfun[layer1.Nodes.Activation], layer1.z)
 end
 
 function update!(layer1::FullyConnectedLayer, layer2::FullyConnectedLayer, α, batch_m)
@@ -99,10 +101,10 @@ end
 # Net struct
 abstract type AbstractNet end
 mutable struct FullyConnectedNet <: AbstractNet
-    dataset::Array
-    label::Array
+    dataset
+    label
 
-    Layers::Array{FullyConnectedLayer}  # [X, L1, L2, ..., Ln]
+    Layers::Array  # [X, L1, L2, ..., Ln]
     α::AbstractFloat  # Learning Rate
     Max_iter::Integer
     Batch_size::Integer
@@ -181,33 +183,82 @@ function initialize_net(X=[], Y=[]; kwargs...)
             size_f = nodes[idx-1]
             weight = Random.randn(size_f, size_p) / size_f
             bias = zeros(size_p, 1)
-            δ = zeros(size_f, size_p)
+            δ = zeros(size_p, batch_size)
             z = zeros(size_p, batch_size)
             a = copy(z)
+
+            if mode == "GPU"
+                weight = cu(weight)
+                bias = cu(bias)
+                δ = cu(δ)
+                z = cu(z)
+                a = cu(a)
+            end
+            layernode = LayerNodes(activations[idx], [], weight, bias)
+            FullyConnectedLayer(nodes[idx], layernode, δ, z, a)
+            
             
         else
-            a = X
+            """
+                The first layer that takes several parts to match the
+            batch stochastic gradient descent, would be a array of Layer
+            objects.
+            """
+            map(1:Int(ceil(size(X, 2)/batch_size))) do batch_idx
+                layernode = LayerNodes(activations[idx], [], weight, bias)
+                if batch_idx < Int(ceil(size(X, 2)/batch_size))
+                    batch = batch_size*(batch_idx-1)+1:batch_size*batch_idx
+                else
+                    batch = batch_size*(batch_idx-1)+1:size(X, 2)
+                end
+                a = X[:, batch]
+
+                if mode == "GPU"
+                    a = cu(a)
+                end
+
+                FullyConnectedLayer(nodes[idx], layernode, δ, z, a)
+            end
         end
-        layernode = LayerNodes(activations[idx], [], weight, bias)
-        FullyConnectedLayer(nodes[idx], layernode, δ, z, a)
     end
 
-    net = FullyConnectedNet(X, Y, layers, α, max_iter, batch_size, config.loss, config.deri_loss)
+    if mode == "CPU"
+        net = FullyConnectedNet(X, Y, layers, α, max_iter, batch_size, config.loss, config.deri_loss)
+    elseif mode == "GPU"
+        net = FullyConnectedNet(cu(X), cu(Y), layers, α, max_iter, batch_size, config.loss, config.deri_loss)
+    end
     return net
 end
 
 function train_once!(net::FullyConnectedNet)
     layer_len = length(net.Layers)
-    for idx = 1:layer_len-1
-        propagate!(net.Layers[idx], net.Layers[idx+1])
+    batch_size = net.Batch_size
+    if layer_len > 1
+        @views for (batch_idx, layer) in enumerate(net.Layers[1])
+            propagate!(layer, net.Layers[2])
+            for idx = 2:layer_len-1
+                propagate!(net.Layers[idx], net.Layers[idx+1])
+            end
+
+            if batch_idx < Int(ceil(size(net.label, 2)/batch_size))
+                batch = batch_size*(batch_idx-1)+1:batch_size*batch_idx
+            else
+                batch = batch_size*(batch_idx-1)+1:size(net.label, 2)
+            end
+
+            net.Layers[end].δ = net.Deri_loss(net.Layers[end].a, net.label[:, batch])
+            for idx = layer_len-1:-1:2
+                backpropagate!(net.Layers[idx], net.Layers[idx+1])
+            end
+            for idx = layer_len:-1:3
+                update!(net.Layers[idx-1], net.Layers[idx], net.α, net.Batch_size)
+            end
+            update!(layer, net.Layers[2], net.α, net.Batch_size)
+
+        end
     end
-    net.Layers[end].δ = net.Deri_loss(net.Layers[end].a, net.label)
-    for idx = layer_len-1:-1:2
-        backpropagate!(net.Layers[idx], net.Layers[idx+1])
-    end
-    for idx = layer_len:-1:2
-        update!(net.Layers[idx-1], net.Layers[idx], net.α, net.Batch_size)
-    end
+
+    # println("Loss: $(get_loss(net))")
 end
 
 function train!(net::FullyConnectedNet)
@@ -217,7 +268,11 @@ function train!(net::FullyConnectedNet)
 end
 
 function get_loss(net::FullyConnectedNet)
-    net.Loss(net.Layers[end].a, net.label)
+    val = net.dataset
+    for layer in net.Layers[2:end]
+        val = layer.Nodes.Weight' * val .+ layer.Nodes.Bias .|> acfun[layer.Nodes.Activation]
+    end
+    net.Loss(val, net.label) / size(net.label, 2)
 end
 
 function report(net::FullyConnectedNet)

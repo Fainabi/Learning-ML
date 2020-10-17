@@ -35,11 +35,13 @@ labels = open("data/mnist/train-labels-idx1-ubyte", "r") do f
     return labels
 end
 
+images = images / 255
+
 
 nodes = [100 50 10]
 activations = fill(Net.Logistic, (1, 3))
 
-net = Net.initialize_net(images, labels; nodes=nodes, activations=activations, max_iter=100)
+net = Net.initialize_net(images, labels; nodes=nodes, activations=activations, max_iter=100, α=1, mode="GPU")
 Net.train!(net)
 
 Net.get_loss(net)
