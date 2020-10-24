@@ -39,9 +39,10 @@ images = images / 255
 
 
 nodes = [100 50 10]
-activations = fill(Net.Logistic, (1, 3))
+activations = fill(Net.ReLU, (1, 3))
 
-net = Net.initialize_net(images, labels; nodes=nodes, activations=activations, max_iter=100, α=1, mode="GPU")
+# net = Net.initialize_net(images, labels; nodes=nodes, activations=activations, max_iter=100, α=1, mode="GPU")
+net = Net.initialize(images, labels, "mnist_test.yaml")
 Net.train!(net)
 
 Net.get_loss(net)

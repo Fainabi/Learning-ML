@@ -1,0 +1,22 @@
+Type: "Convolutional"
+LayerNum: 2
+LearningRate: 1
+# Mode: "GPU"
+Epoches: 1
+BatchSize: 1
+InputSize: "(30,10)"
+InputDimension: 2
+Layer:
+  - layerType: Convolutional
+    activation: ReLU
+    kernelNum: 3
+    kernelSize: (3, 3)
+    stride: (1, 1) 
+  - layerType: MaxPooling
+    # activation: ReLU
+    # kernelNum: 3
+    kernelSize: (3, 3)
+    stride: (3, 3) 
+  - activation: Linear
+    layerType: Normal  # normal or empty
+    nodeNum: 1

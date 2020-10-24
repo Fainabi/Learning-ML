@@ -1,0 +1,14 @@
+Type: "FullyConnected"
+LayerNum: 3
+LearningRate: 1
+Mode: "GPU"
+Epoches: 100
+BatchSize: 1000
+Layer:
+  - activation: Logistic
+    layerType: Normal  # normal or empty
+    nodeNum: 100
+  - activation: Logistic
+    nodeNum: 50
+  - activation: Logistic
+    nodeNum: 10
