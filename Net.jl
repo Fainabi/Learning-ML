@@ -1,7 +1,7 @@
 module Net
 
-using LinearAlgebra, ProgressBars, CUDA
-import Random
+using LinearAlgebra, ProgressBars, CUDA, FFTW
+import Random, YAML
 
 @enum ActivationFunction begin
     Linear
@@ -11,7 +11,7 @@ import Random
 end
 
 logistic(x) = 1 / (1 + exp(-x))
-relu(x) = x>0 ? x : 0
+relu(x) = max(x, 0)
 
 deri_logistic(x) = begin
     log_val = logistic(x)
@@ -33,9 +33,11 @@ deri_acfun = Dict(
     ReLU::ActivationFunction => deri_relu,
     Tanh::ActivationFunction => deri_tanh,
 )
-@enum PoolingFunction begin
+
+@enum LayerType begin
+    Normal
+    Convolutional
     MaxPooling
-    AveragePooling
 end
 
 """
@@ -52,7 +54,14 @@ end
 
 # Layer struct
 abstract type AbstractLayer end
-mutable struct FullyConnectedLayer <: AbstractLayer
+abstract type AbstractSingleChannelLayer <: AbstractLayer end
+abstract type AbstractMultipleChannelLayer <: AbstractLayer end
+mutable struct InputLayer <: AbstractSingleChannelLayer
+    NodeNum::Union{Integer,Tuple}
+    # Nodes::LayerNodes
+    a
+end
+mutable struct FullyConnectedLayer <: AbstractSingleChannelLayer
     NodeNum::Integer
     Nodes::LayerNodes
     δ
@@ -60,42 +69,98 @@ mutable struct FullyConnectedLayer <: AbstractLayer
     z
     a
 end
-mutable struct ConvolutionalLayer <: AbstractLayer
-    NodeNum::Integer
+mutable struct ConvolutionalLayer <: AbstractMultipleChannelLayer
+    NodeNum::Tuple
     Nodes::LayerNodes
-    δ::Array
+    δ
 
-    Kernel::Array
-    Stride::Integer
+    z
+    a
+    Kernel::Array{Any}
+    KernelSize
+    Stride::Tuple
 end
-mutable struct MaxPoolingLayer <: AbstractLayer
-    NodeNum::Integer
-    Nodes::LayerNodes
-    δ::Array
+mutable struct MaxPoolingLayer <: AbstractMultipleChannelLayer
+    NodeNum::Tuple
+    # Nodes::LayerNodes
+    δ
 
-    
+    a
+    Coordinate
+    KernelSize
+    Stride::Tuple
 end
 
-function propagate!(layer1::FullyConnectedLayer, layer2::FullyConnectedLayer)
+function propagate!(layer1::AbstractSingleChannelLayer, layer2::FullyConnectedLayer)
     # println("z: $(size(layer2.z)), w: $(size(layer2.Nodes.Weight)), a: $(size(layer1.a))")
     layer2.z .= layer2.Nodes.Weight' * layer1.a .+ layer2.Nodes.Bias
-    layer2.a .= layer2.z .|> acfun[layer2.Nodes.Activation]
+    layer2.a .= layer2.z .|> acfun[layer2.Nodes.Activation];
 end
-function propagate(layer::ConvolutionalLayer, state)
-
+function propagate!(layer1::AbstractMultipleChannelLayer, layer2::InputLayer)
+    """
+        Get dense into fully connected layer.
+    """
+    # for sampleIdx = 1:size(layer1.a, 4)
+    #     layer2.a[:, sampleIdx] .= reshape(layer1.a[:,:,:,sampleIdx], layer2.NodeNum, 1)
+    # end
+    layer2.a .= reshape(layer1.a, layer2.NodeNum, length(layer1.a)÷layer2.NodeNum);
 end
-function propagate(layer::MaxPoolingLayer, state)
-
+function propagate!(layer1::AbstractMultipleChannelLayer, layer2::ConvolutionalLayer)
+    startX = layer2.KernelSize[1]
+    startY = layer2.KernelSize[2]
+    kernel_num = length(layer2.Kernel)
+    println(size(layer1.a, 4), size(layer1.a, 3), kernel_num)
+    for sampleIdx = 1:size(layer1.a, 4)
+        for channel = 1:size(layer1.a, 3), (idx,kernel) in enumerate(layer2.Kernel)
+            layer2.z[:,:,(channel-1)*kernel_num+idx,sampleIdx] .= 
+                convolve(layer1.a[:,:,channel,sampleIdx], kernel)[
+                    startX:layer2.Stride[1]:end, startY:layer2.Stride[2]:end]
+        end
+    end
+    layer2.a .= layer2.z .|> acfun[layer2.Nodes.Activation];
+end
+function propagate!(layer1::AbstractSingleChannelLayer, layer2::ConvolutionalLayer)
+    startX = layer2.KernelSize[1]
+    startY = layer2.KernelSize[2]
+    for sampleIdx = 1:length(layer1.a)
+        for (idx, kernel) in enumerate(layer2.Kernel)
+            layer2.z[:, :, idx, sampleIdx] .= convolve(layer1.a[sampleIdx], kernel)[
+                startX:layer2.Stride[1]:end, startY:layer2.Stride[2]:end]
+        end
+    end
+    layer2.a .= layer2.z .|> acfun[layer2.Nodes.Activation];
+end
+# We don't need single channel layer to pooling layer
+function propagate!(layer1::AbstractMultipleChannelLayer, layer2::MaxPoolingLayer)
+    for sampleIdx = 1:size(layer2.a, 4)
+        xrange, yrange = size(layer2.a)
+        for aIdx = 1:size(layer2.a, 3)
+            for xIdx = 1:xrange, yIdx = 1:yrange
+                layer2.a[xIdx, yIdx, aIdx, sampleIdx], layer2.Coordinate[xIdx, yIdx, aIdx, sampleIdx] = 
+                    findmax(layer1.a[
+                        1+layer2.Stride[1]*(xIdx-1):min(layer2.KernelSize[1]+layer2.Stride[1]*(xIdx-1), end),
+                        1+layer2.Stride[2]*(yIdx-1):min(layer2.KernelSize[2]+layer2.Stride[2]*(yIdx-1), end),
+                        aIdx,
+                        sampleIdx
+                    ])
+            end
+        end
+    end
 end
 
 function backpropagate!(layer1::FullyConnectedLayer, layer2::FullyConnectedLayer)
-    # println("$(size(layer1.δ)), Weight: $(size(layer2.Nodes.Weight)), delta: $(size(layer2.δ)), z: $(size(layer1.z)) ")
-    layer1.δ .= layer2.Nodes.Weight * layer2.δ .* broadcast(deri_acfun[layer1.Nodes.Activation], layer1.z)
+    layer1.δ .= layer2.Nodes.Weight * layer2.δ .* broadcast(deri_acfun[layer1.Nodes.Activation], layer1.z);
 end
 
-function update!(layer1::FullyConnectedLayer, layer2::FullyConnectedLayer, α, batch_m)
+function update!(layer1::AbstractSingleChannelLayer, layer2::FullyConnectedLayer, α, batch_m)
     layer2.Nodes.Weight .-= layer1.a * transpose(layer2.δ) * α / batch_m
-    layer2.Nodes.Bias .-= sum(layer2.δ, dims=2) * α / batch_m
+    layer2.Nodes.Bias .-= sum(layer2.δ, dims=2) * α / batch_m;
+end
+
+function convolve(A, K)
+    # Size must match that size(A) == size(K)
+    # this work should be done at initialization for saving time of GC
+    ifft(fft(A).*fft(K)) .|> real
 end
 
 # Net struct
@@ -112,8 +177,37 @@ mutable struct FullyConnectedNet <: AbstractNet
     Loss::Function
     Deri_loss::Function
 end
+mutable struct ConvolutionalNet <: AbstractNet
+    dataset
+    label
+
+    Layers::Array  # [X, C1, P1, C2, P2, ..., Y, L1, L2, ..., Ln]
+    α::AbstractFloat
+    Max_iter::Integer
+    Batch_size::Integer
+
+    Loss::Function
+    Deri_loss::Function
+end
 
 abstract type AbstractNetConfig end
+mutable struct GenericNetConfig <: AbstractNetConfig
+    nodes
+    layertype
+    activations
+    α
+    max_iter
+    batch_size
+
+    loss
+    deri_loss
+
+    # CNN
+    kernel
+    kernelsize
+    stride
+    mode
+end
 mutable struct FullyConnedtedNetConfig <: AbstractNetConfig
     nodes
     activations
@@ -126,109 +220,218 @@ mutable struct FullyConnedtedNetConfig <: AbstractNetConfig
     mode
 end
 
-"""
-    initialize_net(X, Y; kwargs)
+mutable struct ConvolutionalNetConfig <: AbstractNetConfig
+    nodes
+    layertype
+    activations
+    α
+    max_iter
+    batch_size
 
-...
-# Arguments
-- `X::Array`: samples
-- `Y::Array`: labels
-- `loss::Function`: loss function, this function just in normal vector-by-vector form
-- `deri_loss::Function`: derivative of loss function, this function ___must___ be in matrix form
-- `activations::Array{ActivationFunction}`: arrays that contains activation function types for every layer. 
-- `nodes::Array`: number of nodes in every layer
-- `max_iter::Number`: maximum time to iterate, default is 1e3
-- `α::AbstractFloat`: learning rate, default is 0.001
-- `mode::String`: "GPU" or "CPU"
-...
-"""
-function initialize_net(X=[], Y=[]; kwargs...)
+    loss
+    deri_loss
+    mode
+end
 
-    config = FullyConnedtedNetConfig(
-        [], # nodes
-        [], # activations
-        .01, # α
-        1000, # max_iter
-        1000, # batch_size
-        (y_hat, y) -> (y_hat - y |> v -> dot(v, v)/2), # loss
-        (y_hat, y) -> y_hat - y, # deri_loss
-        "CPU" # mode
-    )
-    validate_set = (:nodes, :activations, :α, :max_iter, :loss, :deri_loss, :mode, :batch_size)
-    
-    for kw in kwargs
-        if kw.first in validate_set
-            :($(config).$(kw.first) = $(kw.second)) |> eval
-        end
-    end
+function initialize(X=[], Y=[], configFile=missing)
+    config = YAML.load_file(configFile)
 
-    layer_num = length(config.nodes) + 1
-    nodes = [size(X, 1), config.nodes...]
-    activations = [Linear, config.activations...]
-    α = config.α
-    max_iter = config.max_iter
-    batch_size = config.batch_size
-    mode = config.mode
-    loss = config.loss
-    deri_loss = config.deri_loss
+    layerConfig = config["Layer"]
+    batch_size = get(config, "BatchSize", 1000)
+    mode = get(config, "Mode", "CPU")
+    """
+        Set config on layers' z, a, activation
+    """
+    inputLayer = if get(config, "InputDimension", 1) == 1
+        map(1:Int(ceil(size(X, 2)/batch_size))) do batch_idx
+            if batch_idx < Int(ceil(size(X, 2)/batch_size))
+                batch = batch_size*(batch_idx-1)+1:batch_size*batch_idx
+            else
+                batch = batch_size*(batch_idx-1)+1:size(X, 2)
+            end
+            a = X[:, batch]
 
-    weight = []
-    bias = []
-    z = []
-    a = []
-    δ = []
-    layers = map(1:layer_num) do idx
-        if idx > 1
-            size_p = nodes[idx]
-            size_f = nodes[idx-1]
-            weight = Random.randn(size_f, size_p) / size_f
-            bias = zeros(size_p, 1)
-            δ = zeros(size_p, batch_size)
-            z = zeros(size_p, batch_size)
-            a = copy(z)
-
-            if mode == "GPU"
-                weight = cu(weight)
-                bias = cu(bias)
-                δ = cu(δ)
-                z = cu(z)
+            if get(config, "Mode", "CPU") == "GPU"
                 a = cu(a)
             end
-            layernode = LayerNodes(activations[idx], [], weight, bias)
-            FullyConnectedLayer(nodes[idx], layernode, δ, z, a)
-            
-            
-        else
-            """
-                The first layer that takes several parts to match the
-            batch stochastic gradient descent, would be a array of Layer
-            objects.
-            """
-            map(1:Int(ceil(size(X, 2)/batch_size))) do batch_idx
-                layernode = LayerNodes(activations[idx], [], weight, bias)
-                if batch_idx < Int(ceil(size(X, 2)/batch_size))
-                    batch = batch_size*(batch_idx-1)+1:batch_size*batch_idx
-                else
-                    batch = batch_size*(batch_idx-1)+1:size(X, 2)
-                end
-                a = X[:, batch]
 
-                if mode == "GPU"
-                    a = cu(a)
-                end
-
-                FullyConnectedLayer(nodes[idx], layernode, δ, z, a)
+            # FullyConnectedLayer(nodes[idx], layernode, δ, z, a)
+            InputLayer(size(X, 1), a)
+        end
+    else
+        map(1:Int(ceil(length(X)/batch_size))) do batch_idx
+            if batch_idx < Int(ceil(length(X)/batch_size))
+                batch = batch_size*(batch_idx-1)+1:batch_size*batch_idx
+            else
+                batch = batch_size*(batch_idx-1)+1:length(X)
             end
+            a = X[batch]
+
+            if get(config, "Mode", "CPU") == "GPU"
+                a = cu(a)
+            end
+
+            InputLayer(config["InputSize"] |> eval ∘ Meta.parse, a)
         end
     end
+    layers = []
+    for (idx, layer) in enumerate(layerConfig)
+        type = get(layer, "layerType", "Normal")
+        pLayerNodes = (idx==1) ? inputLayer[1].NodeNum : layerConfig[idx-1]["nodeNum"]
+        
+        if type == "Convolutional"
+            channelNum = (idx==1) ? 1 : size(layers[end].a, 3)  # this convolutional layer only set at first
+            kernel_num = layer["kernelNum"]
+            kernel_size = layer["kernelSize"] |> eval ∘ Meta.parse
+            stride = layer["stride"] |> eval ∘ Meta.parse
+            kernels = map(1:kernel_num) do _
+                if typeof(pLayerNodes) <: String
+                    pLayerNodes = pLayerNodes |> eval ∘ Meta.parse
+                end
+                k = zeros(pLayerNodes)
+                # println(pLayerNodes)
+                k[1:kernel_size[1],1:kernel_size[2]] .= Random.randn(kernel_size...)
+                k
+            end
+            nodeNum = (pLayerNodes .- kernel_size .+ 1) ./ stride .|> Int ∘ ceil
+            z = zeros(nodeNum..., kernel_num*channelNum, batch_size)
+            a = copy(z)
+            δ = copy(z)
+            bias = zeros(nodeNum..., kernel_num*channelNum)
+            layerConfig[idx]["nodeNum"] = string(nodeNum)
 
-    if mode == "CPU"
-        net = FullyConnectedNet(X, Y, layers, α, max_iter, batch_size, config.loss, config.deri_loss)
-    elseif mode == "GPU"
-        net = FullyConnectedNet(cu(X), cu(Y), layers, α, max_iter, batch_size, config.loss, config.deri_loss)
+            if get(config, "Mode", "CPU") == "GPU"
+                z = cu(z)
+                a = cu(a)
+                δ = cu(δ)
+                bias = cu(bias)
+            end
+
+            rlayer = ConvolutionalLayer(
+                nodeNum,
+                LayerNodes(
+                    layer["activation"] |> eval ∘ Meta.parse,
+                    [],
+                    [],
+                    bias
+                ),
+                δ,
+                z,
+                a,
+                kernels,
+                kernel_size,
+                stride
+            )
+            
+        elseif type == "MaxPooling"
+            if typeof(pLayerNodes) <: String
+                pLayerNodes = pLayerNodes |> eval ∘ Meta.parse
+            end
+            channelNum = (idx==1) ? 1 : size(layers[end].a, 3)
+            kernel_size = layer["kernelSize"] |> eval ∘ Meta.parse
+            stride = layer["stride"] |> eval ∘ Meta.parse
+            nodeNum = (pLayerNodes .- kernel_size .+ 1) ./ stride .|> Int ∘ ceil
+            a = zeros(nodeNum..., channelNum, batch_size)
+            δ = copy(a)
+            coord = Array{Any}(undef, size(a)...)
+            layerConfig[idx]["nodeNum"] = string(nodeNum)
+
+            if mode == "GPU"
+                a = cu(a)
+                δ = cu(δ)
+            end
+
+            rlayer = MaxPoolingLayer(
+                nodeNum,
+                δ,
+                a,
+                coord,
+                kernel_size,
+                stride,
+            )
+        else
+            if typeof(pLayerNodes) <: String
+                layerNodeNum = *((Meta.parse(pLayerNodes) |> eval)..., size(layers[end].a, 3))  # channelNum
+                a = zeros(layerNodeNum, batch_size)
+                if get(config, "Mode", "CPU") == "GPU"
+                    a = cu(a)
+                end
+                rlayer = InputLayer(
+                    layerNodeNum,
+                    a
+                )
+                push!(layers, rlayer)
+                pLayerNodes = layerNodeNum
+            end
+            layerNodeNum = layer["nodeNum"]
+            z = zeros(layerNodeNum, batch_size)
+            a = copy(z)
+            δ = copy(z)
+            bias = zeros(layerNodeNum, 1)
+            weight = Random.randn(pLayerNodes, layerNodeNum)
+
+            if get(config, "Mode", "CPU") == "GPU"
+                z = cu(z)
+                a = cu(a)
+                δ = cu(δ)
+                bias = cu(bias)
+                weight = cu(weight)
+            end
+
+            rlayer = FullyConnectedLayer(
+                layer["nodeNum"],
+                LayerNodes(
+                    layer["activation"] |> eval ∘ Meta.parse, 
+                    [], 
+                    weight, 
+                    bias
+                ),
+                δ,
+                z,
+                a
+            )
+        end
+
+        push!(layers, rlayer)
     end
+    
+    layers = [inputLayer, layers...]
+    net_type = config["Type"]
+    net = if net_type == "Convolutional"
+        ConvolutionalNet(
+            X,
+            Y,
+            layers,
+            get(config, "LearningRate", .01),
+            get(config, "Epoches", 100),
+            get(config, "BatchSize", 1000),
+            get(config, "Loss", "(y_hat, y) -> (y_hat - y |> v -> dot(v, v)/2)") |> eval ∘ Meta.parse,
+            get(config, "DerivativeLoss", "(y_hat, y) -> y_hat - y") |> eval ∘ Meta.parse
+        )
+    elseif net_type == "Recursive"
+
+    else  # FullyConnected
+        FullyConnectedNet(
+            X, 
+            Y, 
+            layers,
+            get(config, "LearningRate", .01),
+            get(config, "Epoches", 100),
+            get(config, "BatchSize", 1000),
+            get(config, "Loss", "(y_hat, y) -> (y_hat - y |> v -> dot(v, v)/2)") |> eval ∘ Meta.parse,
+            get(config, "DerivativeLoss", "(y_hat, y) -> y_hat - y") |> eval ∘ Meta.parse
+        )
+    end
+
+    if mode == "GPU"
+        net.label = cu(net.label)
+        net.dataset = cu(net.dataset)
+    end
+
     return net
 end
+
+
 
 function train_once!(net::FullyConnectedNet)
     layer_len = length(net.Layers)
