@@ -60,6 +60,7 @@ mutable struct InputLayer <: AbstractSingleChannelLayer
     NodeNum::Union{Integer,Tuple}
     # Nodes::LayerNodes
     a
+    δ
 end
 mutable struct FullyConnectedLayer <: AbstractSingleChannelLayer
     NodeNum::Integer
@@ -73,10 +74,13 @@ mutable struct ConvolutionalLayer <: AbstractMultipleChannelLayer
     NodeNum::Tuple
     Nodes::LayerNodes
     δ
+    δ_padding
+    δ_updating
 
     z
     a
     Kernel::Array{Any}
+    KernelBack::Array{Any}
     KernelSize
     Stride::Tuple
 end
@@ -100,16 +104,14 @@ function propagate!(layer1::AbstractMultipleChannelLayer, layer2::InputLayer)
     """
         Get dense into fully connected layer.
     """
-    # for sampleIdx = 1:size(layer1.a, 4)
-    #     layer2.a[:, sampleIdx] .= reshape(layer1.a[:,:,:,sampleIdx], layer2.NodeNum, 1)
-    # end
-    layer2.a .= reshape(layer1.a, layer2.NodeNum, length(layer1.a)÷layer2.NodeNum);
+    # layer2.a .= reshape(layer1.a, layer2.NodeNum, length(layer1.a)÷layer2.NodeNum);
+    layer2.a .= reshape(layer1.a, size(layer2.a))
 end
 function propagate!(layer1::AbstractMultipleChannelLayer, layer2::ConvolutionalLayer)
     startX = layer2.KernelSize[1]
     startY = layer2.KernelSize[2]
     kernel_num = length(layer2.Kernel)
-    println(size(layer1.a, 4), size(layer1.a, 3), kernel_num)
+    # println(size(layer1.a, 4), size(layer1.a, 3), kernel_num)
     for sampleIdx = 1:size(layer1.a, 4)
         for channel = 1:size(layer1.a, 3), (idx,kernel) in enumerate(layer2.Kernel)
             layer2.z[:,:,(channel-1)*kernel_num+idx,sampleIdx] .= 
@@ -148,13 +150,89 @@ function propagate!(layer1::AbstractMultipleChannelLayer, layer2::MaxPoolingLaye
     end
 end
 
+function mul_derivative!(layer::AbstractLayer)
+    if hasproperty(layer, :Nodes)
+        layer.δ .= layer.δ .* broadcast(deri_acfun[layer.Nodes.Activation], layer.z)
+    end
+end
 function backpropagate!(layer1::FullyConnectedLayer, layer2::FullyConnectedLayer)
     layer1.δ .= layer2.Nodes.Weight * layer2.δ .* broadcast(deri_acfun[layer1.Nodes.Activation], layer1.z);
+    # mul_derivative!(layer1)
+end
+function backpropagate!(layer1::InputLayer, layer2::FullyConnectedLayer)
+    layer1.δ .= layer2.Nodes.Weight * layer2.δ 
+end
+function backpropagate!(layer1::AbstractMultipleChannelLayer, layer2::InputLayer)
+    layer1.δ .= reshape(layer2.δ, size(layer1.δ))
+    mul_derivative!(layer1)
+end
+function backpropagate!(layer1::AbstractMultipleChannelLayer, layer2::MaxPoolingLayer)
+    layer1.δ .*= 0
+    for sampleIdx = 1:size(layer2.δ, 4)
+        for channelIdx = 1:size(layer2.δ, 3)
+            for xIdx = 1:size(layer2.δ, 1), yIdx = 1:size(layer2.δ, 2)
+                @views layer1.δ[
+                    1+layer2.Stride[1]*(xIdx-1):min(layer2.KernelSize[1]+layer2.Stride[1]*(xIdx-1), end),
+                    1+layer2.Stride[2]*(yIdx-1):min(layer2.KernelSize[2]+layer2.Stride[2]*(yIdx-1), end),
+                    channelIdx, 
+                    sampleIdx][layer2.Coordinate[xIdx,yIdx,channelIdx,sampleIdx].I...] +=
+                    layer2.δ[xIdx, yIdx, channelIdx, sampleIdx]
+            end
+        end
+    end
+    mul_derivative!(layer1)
+end
+function backpropagate!(layer1::AbstractMultipleChannelLayer, layer2::ConvolutionalLayer)
+    startX = layer2.KernelSize[1]
+    startY = layer2.KernelSize[2]
+    layer1.δ .*= 0
+    kernel_num = length(layer2.Kernel)
+    for sampleIdx = 1:size(layer1.δ, 4)
+        for channelIdx = 1:size(layer1.δ, 3), (kIdx, kernel) in enumerate(layer2.KernelBack)
+            layer1.δ[:,:,channelIdx, sampleIdx] .+= 
+                convolve(
+                    layer2.δ_padding[:,:,(channelIdx-1)*kernel_num+kIdx ,sampleIdx], 
+                    kernel)[startX:layer2.Stride[1]:end, startY:layer2.Stride[2]:end]
+        end
+    end
+    mul_derivative!(layer1)
 end
 
 function update!(layer1::AbstractSingleChannelLayer, layer2::FullyConnectedLayer, α, batch_m)
     layer2.Nodes.Weight .-= layer1.a * transpose(layer2.δ) * α / batch_m
     layer2.Nodes.Bias .-= sum(layer2.δ, dims=2) * α / batch_m;
+end
+function update!(layer1::AbstractLayer, layer2::MaxPoolingLayer, α, batch_m)
+    # pooling layer doesn't have parameters
+end
+function update!(layer1::AbstractLayer, layer2::InputLayer, α, batch_m)
+    # input layer does't have parameters
+end
+function update!(layer1::AbstractMultipleChannelLayer, layer2::ConvolutionalLayer, α, batch_m)
+    δ_updating = layer2.δ_updating
+    kernel_num = length(layer2.Kernel)
+    xrange, yrange = size(layer2.δ[:,:,1,1])
+    @views for sampleIdx = 1:size(layer2.a, 4)
+        for channelIdx = 1:size(layer1.a, 3), (kIdx, kernel) = enumerate(layer2.Kernel)
+            δ_updating[1:xrange,1:yrange] .= layer2.δ[:,:, (channelIdx-1)*kernel_num+kIdx,sampleIdx]
+            layer2.Kernel[kIdx][1:xrange,1:yrange] .-=
+                convolve(layer1.a[:,:,channelIdx,sampleIdx], δ_updating)[1:xrange,1:yrange] * α / batch_m
+            layer2.Nodes.Bias[kIdx] -= sum(δ_updating) * α / batch_m
+        end
+    end
+end
+function update!(layer1::AbstractSingleChannelLayer, layer2::ConvolutionalLayer, α, batch_m)
+    δ_updating = layer2.δ_updating
+    kernel_num = length(layer2.Kernel)
+    xrange, yrange = size(layer2.δ[:,:,1,1])
+    @views for sampleIdx = 1:size(layer2.a, 4)
+        for (kIdx, kernel) = enumerate(layer2.Kernel)
+            δ_updating[1:xrange,1:yrange] .= layer2.δ[:,:, kIdx,sampleIdx]
+            layer2.Kernel[kIdx][1:xrange,1:yrange] .-=
+                convolve(layer1.a[sampleIdx], δ_updating)[1:xrange,1:yrange] * α / batch_m
+            layer2.Nodes.Bias[kIdx] -= sum(δ_updating) * α / batch_m
+        end
+    end
 end
 
 function convolve(A, K)
@@ -242,6 +320,7 @@ function initialize(X=[], Y=[], configFile=missing)
     """
         Set config on layers' z, a, activation
     """
+    input_size = config["InputSize"] |> eval∘Meta.parse
     inputLayer = if get(config, "InputDimension", 1) == 1
         map(1:Int(ceil(size(X, 2)/batch_size))) do batch_idx
             if batch_idx < Int(ceil(size(X, 2)/batch_size))
@@ -256,7 +335,7 @@ function initialize(X=[], Y=[], configFile=missing)
             end
 
             # FullyConnectedLayer(nodes[idx], layernode, δ, z, a)
-            InputLayer(size(X, 1), a)
+            InputLayer(size(X, 1), a, [])
         end
     else
         map(1:Int(ceil(length(X)/batch_size))) do batch_idx
@@ -271,7 +350,7 @@ function initialize(X=[], Y=[], configFile=missing)
                 a = cu(a)
             end
 
-            InputLayer(config["InputSize"] |> eval ∘ Meta.parse, a)
+            InputLayer(config["InputSize"] |> eval ∘ Meta.parse, a, [])
         end
     end
     layers = []
@@ -293,19 +372,29 @@ function initialize(X=[], Y=[], configFile=missing)
                 k[1:kernel_size[1],1:kernel_size[2]] .= Random.randn(kernel_size...)
                 k
             end
+            kernels_back = map(1:kernel_num) do kIdx
+                k = zeros(pLayerNodes .+ kernel_size .- 1)
+                k[1:kernel_size[1],1:kernel_size[2]] .= kernels[kIdx][kernel_size[1]:-1:1,kernel_size[2]:-1:1]
+                k  # the k flipped for element multiplication
+            end
             nodeNum = (pLayerNodes .- kernel_size .+ 1) ./ stride .|> Int ∘ ceil
             z = zeros(nodeNum..., kernel_num*channelNum, batch_size)
             a = copy(z)
-            δ = copy(z)
-            bias = zeros(nodeNum..., kernel_num*channelNum)
+            δ_padding = zeros(size(kernels_back[1])..., kernel_num*channelNum, batch_size)
+            δ_updating = zeros((idx==1) ? input_size : size(layers[end].a[:,:,1,1]))
+
+            bias = zeros(kernel_num)
             layerConfig[idx]["nodeNum"] = string(nodeNum)
 
             if get(config, "Mode", "CPU") == "GPU"
                 z = cu(z)
                 a = cu(a)
-                δ = cu(δ)
+                δ_padding = cu(δ_padding)
+                δ_updating = cu(δ_updating)
                 bias = cu(bias)
             end
+            δ = @view δ_padding[kernel_size[1]:stride[1]:end-kernel_size[1]+1, 
+                kernel_size[2]:stride[2]:end-kernel_size[2]+1, :,:]
 
             rlayer = ConvolutionalLayer(
                 nodeNum,
@@ -316,9 +405,12 @@ function initialize(X=[], Y=[], configFile=missing)
                     bias
                 ),
                 δ,
+                δ_padding,
+                δ_updating,
                 z,
                 a,
                 kernels,
+                kernels_back,
                 kernel_size,
                 stride
             )
@@ -353,12 +445,15 @@ function initialize(X=[], Y=[], configFile=missing)
             if typeof(pLayerNodes) <: String
                 layerNodeNum = *((Meta.parse(pLayerNodes) |> eval)..., size(layers[end].a, 3))  # channelNum
                 a = zeros(layerNodeNum, batch_size)
+                δ = copy(a)
                 if get(config, "Mode", "CPU") == "GPU"
                     a = cu(a)
+                    δ = cu(δ)
                 end
                 rlayer = InputLayer(
                     layerNodeNum,
-                    a
+                    a,
+                    δ
                 )
                 push!(layers, rlayer)
                 pLayerNodes = layerNodeNum
@@ -433,7 +528,7 @@ end
 
 
 
-function train_once!(net::FullyConnectedNet)
+function train_once!(net::AbstractNet)
     layer_len = length(net.Layers)
     batch_size = net.Batch_size
     if layer_len > 1
@@ -464,7 +559,7 @@ function train_once!(net::FullyConnectedNet)
     # println("Loss: $(get_loss(net))")
 end
 
-function train!(net::FullyConnectedNet)
+function train!(net::AbstractNet)
     for epoch = tqdm(1:net.Max_iter)
         train_once!(net)
     end
