@@ -2,43 +2,7 @@ module Net
 
 using LinearAlgebra, ProgressBars, CUDA, FFTW
 import Random, YAML
-
-@enum ActivationFunction begin
-    Linear
-    Logistic
-    ReLU
-    Tanh
-end
-
-logistic(x) = 1 / (1 + exp(-x))
-relu(x) = max(x, 0)
-
-deri_logistic(x) = begin
-    log_val = logistic(x)
-    log_val * (1 - log_val)
-end
-deri_relu(x) = x>0 ? 1 : 0
-deri_tanh(x) = 1 - tanh(x)^2
-
-acfun = Dict(
-    Linear::ActivationFunction => identity,
-    Logistic::ActivationFunction => logistic,
-    ReLU::ActivationFunction => relu,
-    Tanh::ActivationFunction => tanh,
-)
-
-deri_acfun = Dict(
-    Linear::ActivationFunction => (x) -> 1,
-    Logistic::ActivationFunction => deri_logistic,
-    ReLU::ActivationFunction => deri_relu,
-    Tanh::ActivationFunction => deri_tanh,
-)
-
-@enum LayerType begin
-    Normal
-    Convolutional
-    MaxPooling
-end
+include("Utils.jl")  # for enumeration and nn.functions
 
 """
     Structure Definition
@@ -206,7 +170,7 @@ function update!(layer1::AbstractLayer, layer2::MaxPoolingLayer, α, batch_m)
     # pooling layer doesn't have parameters
 end
 function update!(layer1::AbstractLayer, layer2::InputLayer, α, batch_m)
-    # input layer does't have parameters
+    # input layer doesn't have parameters
 end
 function update!(layer1::AbstractMultipleChannelLayer, layer2::ConvolutionalLayer, α, batch_m)
     δ_updating = layer2.δ_updating
@@ -220,6 +184,7 @@ function update!(layer1::AbstractMultipleChannelLayer, layer2::ConvolutionalLaye
             layer2.Nodes.Bias[kIdx] -= sum(δ_updating) * α / batch_m
         end
     end
+    # println(layer1.a)
 end
 function update!(layer1::AbstractSingleChannelLayer, layer2::ConvolutionalLayer, α, batch_m)
     δ_updating = layer2.δ_updating
